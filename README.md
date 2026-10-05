@@ -1,130 +1,58 @@
-# fleet-template-v1
+# Express template
 
-## What This Template Is
+Provisioned from [`Qode-Fleet-Control/fleet-template-v1`](https://github.com/Qode-Fleet-Control/fleet-template-v1) — the fleet
+lifecycle contract (`bin/`, `fleet.conf`, deploy workflows, `compose.yaml`) with an Express 4 web app (EJS views, static files, JSON body parsing) from the official generator laid on top.
 
-`fleet-template-v1` is a **language-agnostic app lifecycle harness** for apps
-managed by the fleet platform. It gives any app — Node, Python, Go, a Docker
-Compose stack, anything — a uniform way to be deployed and controlled, without
-the fleet needing to know a single thing about your stack.
+Listens on `0.0.0.0:$PORT` (default `3000`) and serves at the root (`/`) of its own hostname
+(`https://<hash>.<FLEET_APP_DOMAIN>/`); the health check hits `/health`. In the container: `node ./bin/www`.
 
-The fleet injects runtime variables into the environment (`PORT`, `BASE_PATH`,
-`DATABASE_URL`) and calls `./bin/run` to deploy. Everything project-specific —
-how to install, build, and start your app — lives in **one file: `fleet.conf`**.
-That is the only file you edit per project.
+## Origin
 
-## Repository Structure
+    npx express-generator@4 --view=ejs --git qode-express-template-v1
 
-```
-fleet.conf        ← the only file you edit per project
-.env              ← local-only env vars (gitignored)
-bin/
-  _common.sh      ← shared logic; never edit this
-  run             ← install + build + start (called by the fleet)
-  start           ← start only (no rebuild)
-  restart         ← stop + full run
-  reload          ← hot-reload config without rebuild
-  stop            ← stop the running process
-```
+Generated 2026-10-05 with express-generator 4.16.1 (host Node v22.12.0 / npm 10.9.0).
 
-## The One File You Edit: `fleet.conf`
+## Run it
 
-`fleet.conf` is sourced as shell by the lifecycle scripts. Fill in the commands
-for your stack; leave any command empty (`''`) to skip that step.
+### On the fleet
 
-```sh
-NAME="my-app"           # label shown in fleet logs
-PORT="3000"             # default port (fleet overrides via $PORT env var)
-HEALTH_PATH="/"         # HTTP path that returns 200 when the app is ready
+The fleet clones the repo, injects `PORT` (and the workspace's `DATABASE_URL`, `REDIS_URL`, ...) and runs
+`bin/run`, which uses the docker runtime from `fleet.conf`: `docker compose build`, then `docker compose up --remove-orphans` in the foreground.
 
-INSTALL_CMD='npm ci'
-BUILD_CMD='npm run build'
-START_CMD='node dist/server.js'   # must listen on $PORT; run in foreground
-RELOAD_CMD=''           # optional; empty → falls back to stop+start
-```
+### With docker
 
-> **Critical rule:** single-quote any command that uses `$PORT` or
-> `$BASE_PATH`. Single quotes defer variable expansion to **runtime** — when the
-> command actually runs, with the fleet-injected value — rather than at the
-> moment `fleet.conf` is sourced (when those values aren't set yet). Use
-> `START_CMD='gunicorn app:app --bind 0.0.0.0:$PORT'`, never double quotes.
+    PORT=3000 bin/run                  # what the fleet does
+    docker compose up --build        # or plain compose
 
-## How the Lifecycle Works
+### Without docker
 
-| Script | What it does | When to use |
-| --- | --- | --- |
-| `bin/run` | `INSTALL_CMD` → `BUILD_CMD` → `START_CMD` | Fleet deploy, fresh start |
-| `bin/start` | `START_CMD` only | Restart without rebuild |
-| `bin/restart` | stop + `bin/run` | After a code/dep change |
-| `bin/reload` | `RELOAD_CMD`, or stop+start if empty | After a config-only change |
-| `bin/stop` | Kill by pidfile or port | Tear down |
+`FLEET_RUNTIME=process bin/run` runs the plain commands from `fleet.conf`:
 
-> The process PID is written to `.fleet/app.pid` so subsequent `stop`/`restart`
-> calls can find and terminate it reliably. If the pidfile is missing or stale,
-> `stop` falls back to freeing whatever is listening on `$PORT`.
+| step | command |
+|---|---|
+| install | `npm install` |
+| build | `(none)` |
+| start | `env PORT="$PORT" node ./bin/www` |
 
-## How to Apply This to Your Project
+    ./bin/run       # install, build, start in the foreground
+    ./bin/start     # start from existing build artifacts
+    ./bin/restart   # rebuild and restart
+    ./bin/stop      # stop whatever holds the port
 
-### Step 1 — Copy the template into your repo
+See `docs/fleet-lifecycle.md` for the full contract.
 
-```sh
-cp -r fleet-template-v1/* my-project/
-```
+## Deviations from the generator output
 
-Or, if starting fresh, just clone it and work from `main`.
+- Added `GET /health` (returns `{"status":"ok"}`) in `app.js` for the fleet health check.
+- Dependencies bumped to patched releases: the generator still pins 2018-era versions with published advisories (`ejs ~2.6.1` has a critical template-injection RCE, `morgan <1.12.1` log forging). Now `express ^4.21.2`, `ejs ^3.1.10`, `morgan ~1.12.1`, `http-errors ~2.0.0`, `cookie-parser ~1.4.7`; `npm audit` is clean.
+- `bin/www` (the generator's server entrypoint) shares `bin/` with the fleet's lifecycle scripts; the names do not collide, so both stay where their tools expect them.
+- `package-lock.json` added (`npm install --package-lock-only`) so the image build can use `npm ci`.
+- Added the fleet files: `bin/` (lifecycle scripts), `fleet.conf`, `Dockerfile`, `compose.yaml`, `.dockerignore`, `.env.example`, `.github/workflows/`, `docs/fleet-lifecycle.md`; fleet entries (`.fleet/`, `*.log`, ...) prepended to `.gitignore`.
 
-### Step 2 — Edit `fleet.conf` (the only required change)
+## Verified
 
-Fill in your stack's commands. Per-stack examples:
+Verified 2026-10-05 against the fleet's docker runtime, on docker 29.8:
 
-```sh
-# Node.js
-INSTALL_CMD='npm ci'
-BUILD_CMD='npm run build'
-START_CMD='node dist/index.js'
-
-# Python (Gunicorn)
-INSTALL_CMD='pip install -r requirements.txt'
-BUILD_CMD=''
-START_CMD='gunicorn app:app --bind 0.0.0.0:$PORT'
-
-# Go
-INSTALL_CMD=''
-BUILD_CMD='go build -o ./out/server ./cmd/server'
-START_CMD='./out/server'
-
-# Docker Compose
-INSTALL_CMD=''
-BUILD_CMD='docker compose build'
-START_CMD='docker compose up'
-RELOAD_CMD='docker compose up -d --no-build'
-```
-
-### Step 3 — Set local env vars in `.env` (gitignored)
-
-```sh
-APP_NAME=My App
-DATABASE_URL=postgres://localhost/mydb
-```
-
-### Step 4 — Verify standalone
-
-```sh
-PORT=3001 bin/run      # should install, build, and serve on 3001
-curl http://localhost:3001/   # should 200
-```
-
-### Step 5 — Connect to the fleet
-
-Point the fleet at your repo. It will clone it, inject `PORT` / `BASE_PATH` /
-`DATABASE_URL`, and call `bin/run`. As long as your `START_CMD` listens on
-`$PORT` and `HEALTH_PATH` returns 200, the fleet will mark the app healthy.
-
-## Key Invariants
-
-- **`START_CMD` must run in the foreground and listen on `$PORT`.** Do not use a
-  dev server — HMR / hot-reload chunks 404 behind the ingress and will break the
-  app.
-- **Never put secrets in `fleet.conf`** — it's committed. Use `.env` locally;
-  the fleet injects secrets via the environment.
-- **`bin/_common.sh` is shared infrastructure** — don't edit it per project. All
-  project-specific configuration belongs in `fleet.conf`.
+- `migrate.py audit` (the coordinator's own refusal checks): **READY**.
+- `verify.sh <repo> 46011` — `bin/run` in the background, probe `HEALTH_PATH`, `bin/restart`, probe again,
+  `bin/stop`: `run=200 restart=200 containers_after_stop=0`. `GET /health` answered 200 via the container. `npm audit`: 0 vulnerabilities.
