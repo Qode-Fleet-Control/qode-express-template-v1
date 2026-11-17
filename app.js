@@ -13,7 +13,20 @@ var app = express();
 app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'ejs');
 
-app.use(logger('dev'));
+// KEEP THIS: one log line per request (status + duration) is what the workspace Monitoring tab charts.
+// One JSON line per finished request on stdout, health checks included:
+//   {"status":200,"durationMs":3.2,"method":"GET","path":"/health","ua":"curl/8.5.0"}
+// Never logs bodies, cookies, headers other than the user agent, or the query string.
+app.use(logger(function(tokens, req, res) {
+  var url = req.originalUrl || req.url || '';
+  return JSON.stringify({
+    status: res.statusCode,
+    durationMs: Math.round(Number(tokens['response-time'](req, res, 3) || 0) * 10) / 10,
+    method: req.method,
+    path: url.split('?')[0].slice(0, 512),
+    ua: String(req.headers['user-agent'] || '').slice(0, 256)
+  });
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
